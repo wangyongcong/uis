@@ -695,7 +695,8 @@ namespace UIS {
             // by https://github.com/webitube
             // Note: If the scroller position changed but the scroll velocity is exactly zero, the movement was done via a scrollbar. In this case, we need to ScrollTo() the indicated position directly.
             // Note 2: The normalized scrollbar position is opposite from the ScrollTo() index. This is why the we take (1.0 - pos) instead of pos directly.            
-            if (_scroll.velocity.magnitude == 0.0f) {
+            // Note 3: the scroller position can also be changed by snapping. Don't ScrollTo() in this case.
+            if (!EnableSnap && _scroll.velocity.magnitude == 0.0f) {
                 var pos = (Type == 0) ? vector.y : vector.x;
                 var index = Mathf.RoundToInt(_count * (1.0f - pos));
                 ScrollTo(index);
@@ -1545,8 +1546,13 @@ namespace UIS {
             if (!SnapAnchor) return;
             SnapAnchor.gameObject.SetActive(b);
             if (b) {
-                SnapAnchor.anchorMin = Vector2.up;
-                SnapAnchor.anchorMax = Vector2.up;
+                if (Type == 0) {
+                    SnapAnchor.anchorMin = Vector2.up;
+                    SnapAnchor.anchorMax = Vector2.one;
+                } else {
+                    SnapAnchor.anchorMin = Vector2.zero;
+                    SnapAnchor.anchorMax = Vector2.up;
+                }
                 SnapAnchor.offsetMin = Vector2.zero;
                 SnapAnchor.offsetMax = Vector2.zero;
                 ApplySnapAnchorPosition();
