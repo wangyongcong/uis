@@ -1049,24 +1049,22 @@ namespace UIS {
         /// Update positions for visible items
         /// </summary>
         void UpdatePositions() {
-            var pos = Vector2.zero;
-            pos.y = 0f;
             for (var i = 0; i < _views.Length; i++) {
                 if (i + 1 > _count) {
                     continue;
                 }
                 var index = int.Parse(_views[i].name);
                 if (index < _count) {
-                    pos = _rects[i].anchoredPosition;
-                    pos.y = _positions[i];
-                    pos.x = 0f;
-                    _rects[i].anchoredPosition = pos;
+                    var pos = _rects[i].anchoredPosition;
                     var size = _rects[i].sizeDelta;
                     if (Type == 0) {
+                        pos.y = _positions[i];
                         size.y = _heights[i];
                     } else {
+                        pos.x = _positions[i];
                         size.x = _widths[i];
                     }
+                    _rects[i].anchoredPosition = pos;
                     _rects[i].sizeDelta = size;
                 }
             }
