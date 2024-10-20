@@ -259,7 +259,11 @@ namespace UIS {
         }
 
         void OnSnappingPropertyGUI() {
+            EditorGUI.BeginChangeCheck();
             EditorGUILayout.PropertyField(_enableSnap);
+            if (EditorGUI.EndChangeCheck()) {
+                _target.SetSnapAnchorVisible(_enableSnap.boolValue && _showSnapAnchor.boolValue);
+            }
             if (!_enableSnap.boolValue) {
                 return;
             }
