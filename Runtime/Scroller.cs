@@ -1,9 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Reflection;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+// ReSharper disable InvalidXmlDocComment
+// ReSharper disable InconsistentNaming
+// ReSharper disable RedundantDefaultMemberInitializer
 
 namespace UIS {
 
@@ -15,6 +19,18 @@ namespace UIS {
         Bottom = 1,
         Left = 2,
         Right = 3
+    }
+
+    public enum HorizontalSnapAlignment {
+        Left,
+        Middle,
+        Right
+    }
+    
+    public enum VerticalSnapAlignment {
+        Top,
+        Middle,
+        Bottom
     }
 
     /// <summary>
@@ -56,12 +72,27 @@ namespace UIS {
         /// Callback on pull action
         /// </summary>
         public Action<ScrollerDirection> OnPull = delegate { };
+        
+        /// <summary>
+        /// Callback on snap to item
+        /// </summary>
+        public Action<int, GameObject> OnSnap = delegate { };
 
         [Header("Item settings")]
         /// <summary>
         /// Item list prefab
         /// </summary>
         public GameObject Prefab = null;
+
+        /// <summary>
+        // calculate size for each item
+        /// </summary>
+        public bool DynamicItemSize = true;
+        
+        /// <summary>
+        /// Fixed item size
+        /// </summary>
+        public int FixedItemSize = 0;
 
         [Header("Padding")]
         /// <summary>
@@ -220,6 +251,43 @@ namespace UIS {
         [HideInInspector]
         public int Type = 0;
 
+        [Header("Snapping")] 
+        /// <summary>
+        /// If snapping enabled
+        /// </summary>
+        public bool EnableSnap;
+
+        /// <summary>
+        /// Vertical snapping alignment 
+        /// </summary>
+        public VerticalSnapAlignment VerticalSnap;
+        
+        /// <summary>
+        /// Horizontal snapping alignment
+        /// </summary>
+        public HorizontalSnapAlignment HorizontalSnap;
+        
+        /// <summary>
+        /// The normalized viewport position that the item be snapped to
+        /// </summary>
+        [Range(0, 1)]
+        public float SnapAnchorPosition = 0.5f;
+        
+        /// <summary>
+        /// Snapping speed
+        /// </summary>
+        public float SnapElasticity = 0.1f;
+        
+        /// <summary>
+        /// The anchor indicating where the item should snap to
+        /// </summary>
+        public RectTransform SnapAnchor;
+        
+        /// <summary>
+        /// Show snap anchor
+        /// </summary>
+        public bool ShowSnapAnchor;
+        
         /// <summary>
         /// Scrollrect cache
         /// </summary>
@@ -316,6 +384,61 @@ namespace UIS {
         bool _isInited = false;
 
         /// <summary>
+        /// Calculated left padding 
+        /// </summary>
+        float _leftPadding;
+        
+        /// <summary>
+        /// Calculated right padding 
+        /// </summary>
+        float _rightPadding;
+        
+        /// <summary>
+        /// Calculated top padding 
+        /// </summary>
+        float _topPadding;
+        
+        /// <summary>
+        /// Calculated bottom padding 
+        /// </summary>
+        float _bottomPadding;
+        
+        /// <summary>
+        /// If the scrolling speed is slow enough to be considered snapping
+        /// </summary>
+        bool _isSlowScrolling;
+        
+        /// <summary>
+        /// Last frame's scroll position (content anchored position)
+        /// </summary>
+        float _lastScrollPosition;
+        
+        /// <summary>
+        /// Last scrolling direction (1 = right, -1 = left)
+        /// </summary>
+        int _scrollDirection;
+        
+        /// <summary>
+        /// If snapping is currently in progress
+        /// </summary>
+        bool _snapping;
+        
+        /// <summary>
+        /// Snap to index
+        /// </summary>
+        int _snapToIndex;
+        
+        /// <summary>
+        /// Snap to position
+        /// </summary>
+        float _snapToPosition;
+        
+        /// <summary>
+        /// Snap velocity
+        /// </summary>
+        float _snapVelocity;
+
+        /// <summary>
         /// Constructor
         /// </summary>
         void Awake() {
@@ -329,6 +452,11 @@ namespace UIS {
             _widths = new Dictionary<int, int>();
             _positions = new Dictionary<int, float>();
             CreateLabels();
+            if (SnapAnchor == null) {
+                ShowSnapAnchor = false;
+            } else {
+                SetSnapAnchorVisible(ShowSnapAnchor);
+            }
         }
 
         /// <summary>
@@ -367,6 +495,9 @@ namespace UIS {
             } else {
                 UpdateHorizontal();
             }
+            if (EnableSnap) {
+                UpdateSnap();
+            }
         }
 
         /// <summary>
@@ -376,12 +507,20 @@ namespace UIS {
             if (_count == 0 || !_isInited) {
                 return;
             }
+            
+            float currentScrollPosition = _content.anchoredPosition.y;
+            bool isScrollPositionChanged = !Mathf.Approximately(currentScrollPosition, _lastScrollPosition);
+            if (isScrollPositionChanged) {
+                _scrollDirection = currentScrollPosition < _lastScrollPosition ? -1 : 1;
+            }
+            _lastScrollPosition = currentScrollPosition;
+
             if (_isComplexList) {
                 var topPosition = _content.anchoredPosition.y - ItemSpacing;
-                if (topPosition <= 0f && _rects[0].anchoredPosition.y < -TopPadding) {
-                    InitData(_count);
-                    return;
-                }
+                // if (topPosition <= 0f && _rects[0].anchoredPosition.y < -_topPadding) {
+                //     InitData(_count);
+                //     return;
+                // }
                 if (topPosition < 0f) {
                     return;
                 }
@@ -390,7 +529,7 @@ namespace UIS {
                 }
                 var itemPosition = Mathf.Abs(_positions[_previousPosition]) + _heights[_previousPosition];
                 var position = (topPosition > itemPosition) ? _previousPosition + 1 : _previousPosition - 1;
-                if (position < 0 || _scroll.velocity.y == 0.0f) {
+                if (position < 0 || !isScrollPositionChanged) {
                     return;
                 }
                 if (position > _previousPosition) {
@@ -429,26 +568,29 @@ namespace UIS {
                 }
                 _previousPosition = position;
             } else {
-                var topPosition = _content.anchoredPosition.y - ItemSpacing;
+                var topPosition = _content.anchoredPosition.y - _topPadding;
                 var offset = Mathf.FloorToInt(topPosition / (_offsetData + ItemSpacing));
-                for (var i = offset; i < offset + _views.Length; i++) {
+                var first = Mathf.Max(0, offset);
+                var last = Math.Min(offset + _views.Length, _count);
+                for (var i = first; i < last; i++) {
                     var index = i % _views.Length;
-                    if (i < 0 || i > _count - 1 || _rects == null || !_isInited) {
-                        continue;
-                    }
-                    var position = _rects[index].anchoredPosition;
-                    var size = _rects[index].sizeDelta;
-                    position.y = _positions[i];
-                    _rects[index].anchoredPosition = position;
                     if (_indexes[index] != i) {
                         _indexes[index] = i;
+                        var position = _rects[index].anchoredPosition;
+                        var size = _rects[index].sizeDelta;
+                        position.y = _positions[i];
+                        _rects[index].anchoredPosition = position;
                         size.y = _heights[i];
                         _rects[index].sizeDelta = size;
                         _views[index].name = i.ToString();
                         OnFill(i, _views[index]);
                     }
                 }
+                _previousPosition = first;
             }
+            // if bottom padding is large enough, _previousPosition will be overflowed
+            if (_previousPosition >= _count)
+                _previousPosition = _count - 1;
         }
 
         /// <summary>
@@ -458,21 +600,31 @@ namespace UIS {
             if (_count == 0 || !_isInited) {
                 return;
             }
+            
+            float currentScrollPosition = _content.anchoredPosition.x;
+            bool isScrollPositionChanged = !Mathf.Approximately(currentScrollPosition, _lastScrollPosition);
+            if (isScrollPositionChanged) {
+                _scrollDirection = currentScrollPosition < _lastScrollPosition ? -1 : 1;
+            }
+            _lastScrollPosition = currentScrollPosition;
+            
             if (_isComplexList) {
-                var _leftPosition = _content.anchoredPosition.x * -1f - ItemSpacing;
-                if (_leftPosition <= 0f && _rects[0].anchoredPosition.x < -LeftPadding) {
-                    InitData(_count);
-                    return;
-                }
-                if (_leftPosition < 0f) {
+                var leftPosition = _content.anchoredPosition.x * -1f - ItemSpacing;
+                // TODO: When _leftPadding is negative, the condition may be true then InitData is called every frame
+                // if (leftPosition <= 0f && _rects[0].anchoredPosition.x < -_leftPadding) {
+                //     InitData(_count);
+                //     return;
+                // }
+                if (leftPosition < 0f) {
                     return;
                 }
                 if (!_positions.ContainsKey(_previousPosition) || !_widths.ContainsKey(_previousPosition)) {
                     return;
                 }
                 var itemPosition = Mathf.Abs(_positions[_previousPosition]) + _widths[_previousPosition];
-                var position = (_leftPosition > itemPosition) ? _previousPosition + 1 : _previousPosition - 1;
-                if (position < 0 || _scroll.velocity.x == 0.0f) {
+                // TODO: When moving inside item, position is toggling between _previousPosition + 1 and _previousPosition repeatedly
+                var position = (leftPosition > itemPosition) ? _previousPosition + 1 : _previousPosition - 1;
+                if (position < 0 || !isScrollPositionChanged) {
                     return;
                 }
                 if (position > _previousPosition) {
@@ -511,26 +663,29 @@ namespace UIS {
                 }
                 _previousPosition = position;
             } else {
-                var _leftPosition = _content.anchoredPosition.x * -1f - ItemSpacing;
-                var offset = Mathf.FloorToInt(_leftPosition / (_offsetData + ItemSpacing));
-                for (var i = offset; i < offset + _views.Length; i++) {
+                var leftPosition = _content.anchoredPosition.x * -1f - _leftPadding;
+                var offset = Mathf.FloorToInt(leftPosition / (_offsetData + ItemSpacing));
+                var first = Mathf.Max(0, offset);
+                var last = Math.Min(offset + _views.Length, _count);
+                for (var i = first; i < last; i++) {
                     var index = i % _views.Length;
-                    if (i < 0 || i > _count - 1 || _rects == null || !_isInited) {
-                        continue;
-                    }
-                    var position = _rects[index].anchoredPosition;
-                    var size = _rects[index].sizeDelta;
-                    position.x = _positions[i];
-                    _rects[index].anchoredPosition = position;
                     if (_indexes[index] != i) {
                         _indexes[index] = i;
+                        var position = _rects[index].anchoredPosition;
+                        var size = _rects[index].sizeDelta;
+                        position.x = _positions[i];
                         size.x = _widths[i];
+                        _rects[index].anchoredPosition = position;
                         _rects[index].sizeDelta = size;
                         _views[index].name = i.ToString();
                         OnFill(i, _views[index]);
                     }
                 }
+                _previousPosition = first;
             }
+            // if right padding is large enough, _previousPosition will be overflowed
+            if (_previousPosition >= _count)
+                _previousPosition = _count - 1;
         }
 
         /// <summary>
@@ -781,16 +936,44 @@ namespace UIS {
             _heights.Clear();
             _positions.Clear();
             _offsetData = 0f;
-            var result = 0f;
-            for (var i = 0; i < count; i++) {
-                _heights[i] = OnHeight(i);
-                _offsetData += _heights[i];
-                _positions[i] = -(TopPadding + i * ItemSpacing + result);
-                result += _heights[i];
+            if (DynamicItemSize && null != OnHeight) {
+                for (var i = 0; i < count; i++) {
+                    _heights[i] = OnHeight(i);
+                }
+            } else {
+                for (var i = 0; i < count; i++) {
+                    _heights[i] = FixedItemSize;
+                }
             }
-            _offsetData /= count;
-            _isComplexList = _offsetData != _heights[0];
-            result += TopPadding + BottomPadding + (count == 0 ? 0 : ((count - 1) * ItemSpacing));
+
+            if (EnableSnap) {
+                CalcSnappedPaddingVertical();
+            }
+            else {
+                _topPadding = TopPadding;
+                _bottomPadding = BottomPadding;
+            }
+            var result = 0f;
+            if (DynamicItemSize) {
+                for (var i = 0; i < count; i++) {
+                    // _heights[i] = OnHeight(i);
+                    _offsetData += _heights[i];
+                    _positions[i] = -(_topPadding + i * ItemSpacing + result);
+                    result += _heights[i];
+                }
+                _offsetData /= count;
+                _isComplexList = !Mathf.Approximately(_offsetData, _heights[0]);
+            } else {
+                var fixedSpacing = ItemSpacing + FixedItemSize;
+                for (var i = 0; i < count; i++) {
+                    // _heights[i] = FixedItemSize;
+                    _positions[i] = -(_topPadding + i * fixedSpacing);
+                }
+                _offsetData = FixedItemSize;
+                _isComplexList = false;
+                result = FixedItemSize * count;
+            }
+            result += _topPadding + _bottomPadding + (count == 0 ? 0 : ((count - 1) * ItemSpacing));
             return result;
         }
 
@@ -801,16 +984,42 @@ namespace UIS {
         float CalcSizesPositionsHorizontal(int count) {
             _widths.Clear();
             _positions.Clear();
-            var result = 0f;
-            for (var i = 0; i < count; i++) {
-                _widths[i] = OnWidth(i);
-                _offsetData += _widths[i];
-                _positions[i] = LeftPadding + i * ItemSpacing + result;
-                result += _widths[i];
+            if (DynamicItemSize && null != OnWidth) {
+                for (var i = 0; i < count; i++) {
+                    _widths[i] = OnWidth(i);
+                }
+            } else {
+                for (var i = 0; i < count; i++) {
+                    _widths[i] = FixedItemSize;
+                }
             }
-            _offsetData /= count;
-            _isComplexList = _offsetData != _widths[0];
-            result += LeftPadding + RightPadding + (count == 0 ? 0 : ((count - 1) * ItemSpacing));
+            if (EnableSnap) {
+                CalcSnappedPaddingHorizontal();
+            } else {
+                _leftPadding = LeftPadding;
+                _rightPadding = RightPadding;
+            }
+            var result = _leftPadding;
+            if (DynamicItemSize) {
+                for (var i = 0; i < count; i++) {
+                    _offsetData += _widths[i];
+                    _positions[i] = result;
+                    result += _widths[i] + ItemSpacing;
+                }
+                _offsetData /= count;
+                _isComplexList = !Mathf.Approximately(_offsetData, _widths[0]);
+            } else {
+                var fixedSpacing = ItemSpacing + FixedItemSize;
+                for (var i = 0; i < count; i++) {
+                    _positions[i] = result;
+                    result += fixedSpacing;
+                }
+                _offsetData = FixedItemSize;
+                _isComplexList = false;
+            }
+            result += _rightPadding;
+            if (count > 0)
+                result -= ItemSpacing;
             return result;
         }
 
@@ -1313,6 +1522,250 @@ namespace UIS {
             rect.offsetMin = Vector2.zero;
             rect.anchoredPosition3D = Vector3.zero;
             rightText.SetActive(false);
+        }
+
+        static FieldInfo scrollRectDraggingField;
+        
+        bool IsDragging() {
+            if (null == _scroll) {
+                return false;
+            }
+            if (null == scrollRectDraggingField) {
+                var scrollRectType = typeof(ScrollRect);
+                scrollRectDraggingField = scrollRectType.GetField("m_Dragging", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (null == scrollRectDraggingField) {
+                    Debug.LogError("Can't find m_Dragging field in ScrollRect");
+                    return false;
+                }
+            }
+            return (bool) scrollRectDraggingField.GetValue(_scroll);
+        }
+
+        public void SetSnapAnchorVisible(bool b) {
+            if (!SnapAnchor) return;
+            SnapAnchor.gameObject.SetActive(b);
+            if (b) {
+                SnapAnchor.anchorMin = Vector2.up;
+                SnapAnchor.anchorMax = Vector2.up;
+                SnapAnchor.offsetMin = Vector2.zero;
+                SnapAnchor.offsetMax = Vector2.zero;
+                ApplySnapAnchorPosition();
+            }
+        }
+
+        void ApplySnapAnchorPosition() {
+#if UNITY_EDITOR
+            if (!Application.isPlaying) {
+                if (!_scroll) 
+                    _scroll = GetComponent<ScrollRect>();
+            }
+#endif
+            var viewSize = _scroll.viewport.rect.size;
+            var anchorPos = SnapAnchor.anchoredPosition;
+            if (Type == 0) {
+                anchorPos.y = -SnapAnchorPosition * viewSize.y;
+            } else {
+                anchorPos.x = SnapAnchorPosition * viewSize.x;
+            }
+            SnapAnchor.anchoredPosition = anchorPos;
+        }
+        
+        public void RefreshSnapping() {
+            if (null != SnapAnchor) 
+                ApplySnapAnchorPosition();
+            // TODO: re-calculate positions and refresh the view
+        }
+
+        void CalcSnappedPaddingVertical() {
+            var viewSize = _scroll.viewport.rect.size.y;
+            var topPadding = SnapAnchorPosition * viewSize;
+            var bottomPadding = (1 - SnapAnchorPosition) * viewSize;
+            float firstItemSize = DynamicItemSize ? _heights[0] : FixedItemSize;
+            float lastItemSize = DynamicItemSize ? _heights[_heights.Count - 1] : FixedItemSize;
+            switch (VerticalSnap) {
+                case VerticalSnapAlignment.Top:
+                    bottomPadding -= lastItemSize;
+                    break;
+                case VerticalSnapAlignment.Middle:
+                    topPadding -= firstItemSize / 2;
+                    bottomPadding -= lastItemSize / 2;
+                    break;
+                case VerticalSnapAlignment.Bottom:
+                    topPadding -= firstItemSize;
+                    break;
+            }
+            _topPadding = topPadding;
+            _bottomPadding = bottomPadding;
+        }
+
+        void CalcSnappedPaddingHorizontal() {
+            var viewSize = _scroll.viewport.rect.size.x;
+            var leftPadding = SnapAnchorPosition * viewSize;
+            var rightPadding = (1 - SnapAnchorPosition) * viewSize;
+            float firstItemSize = DynamicItemSize ? _widths[0] : FixedItemSize; 
+            float lastItemSize = DynamicItemSize ? _widths[_widths.Count - 1] : FixedItemSize; 
+            switch (HorizontalSnap) {
+                case HorizontalSnapAlignment.Left:
+                    rightPadding -= lastItemSize;
+                    break;
+                case HorizontalSnapAlignment.Middle:
+                    leftPadding -= firstItemSize / 2;
+                    rightPadding -= lastItemSize / 2;
+                    break;
+                case HorizontalSnapAlignment.Right:
+                    leftPadding -= firstItemSize;
+                    break;
+            }
+            _leftPadding = leftPadding;
+            _rightPadding = rightPadding;
+        }
+
+        public void SnapTo(int index) {
+            if (index < 0 || index >= _count) {
+                return;
+            }
+            var viewportSize = _scroll.viewport.rect.size;
+            var scrollPos = _content.anchoredPosition.x;
+            float snapAnchorPos;
+            float snapToPos;
+            if (Type == 0) {
+                snapAnchorPos = -viewportSize.y * SnapAnchorPosition;
+                float sizeRatio = 0;
+                if (VerticalSnap == VerticalSnapAlignment.Middle)
+                    sizeRatio = -0.5f;
+                else if (VerticalSnap == VerticalSnapAlignment.Bottom)
+                    sizeRatio = -1f;
+                snapToPos = scrollPos + _positions[index] + _heights[index] * sizeRatio;
+            } else {
+                snapAnchorPos = viewportSize.x * SnapAnchorPosition;
+                float sizeRatio = 0;
+                if (HorizontalSnap == HorizontalSnapAlignment.Middle)
+                    sizeRatio = 0.5f;
+                else if (HorizontalSnap == HorizontalSnapAlignment.Right)
+                    sizeRatio = 1f;
+                snapToPos = scrollPos + _positions[index] + _widths[index] * sizeRatio;
+            }
+            _scroll.StopMovement();
+            _isSlowScrolling = false;
+            _snapping = true;
+            _snapToIndex = index;
+            _snapToPosition = scrollPos + (snapAnchorPos - snapToPos);
+            _snapVelocity = 0;
+        }
+
+        void UpdateSnap() {
+            const float slowScrollVelocity = 50;
+            const float smallDistance = 0.5f;
+            var axis = 1 - Type;
+            float velocity = _scroll.velocity[axis];
+            bool isDragging = IsDragging();
+            bool isSlowScrolling = Mathf.Abs(velocity) >= slowScrollVelocity || isDragging;
+            if (_isSlowScrolling != isSlowScrolling) {
+                _isSlowScrolling = isSlowScrolling;
+                if (isSlowScrolling) {
+                    _snapping = false;
+                } else {
+                    // TODO: when dragged before the first item or after the last item, do not snap. Let scroll rect elasticity to take control.
+                    _snapping = Type == 0 ? CalcSnapPositionVertical() : CalcSnapPositionHorizontal();
+                }
+            }
+
+            if (_snapping) {
+                _scroll.StopMovement();
+                var anchoredPos = _content.anchoredPosition;
+                var x = Mathf.SmoothDamp(anchoredPos[axis], _snapToPosition, ref _snapVelocity, SnapElasticity);
+                if (Mathf.Abs(x - _snapToPosition) < smallDistance) {
+                    x = _snapToPosition;
+                    _snapping = false;
+                    OnSnap(_snapToIndex, _views[_snapToIndex % _views.Length]);
+                }
+                anchoredPos[axis] = x;
+                _content.anchoredPosition = anchoredPos;
+            }
+        }
+
+        bool CalcSnapPositionVertical() {
+            var last = Math.Min(_previousPosition + _views.Length, _count);
+            if (last < 1) {
+                return false;
+            }
+            
+            var viewportSize = _scroll.viewport.rect.size;
+            var snapAnchorPos = -viewportSize.y * SnapAnchorPosition;
+            var scrollPos = _content.anchoredPosition.y;
+            float sizeRatio = 0;
+            if (VerticalSnap == VerticalSnapAlignment.Middle)
+                sizeRatio = -0.5f;
+            else if (VerticalSnap == VerticalSnapAlignment.Bottom)
+                sizeRatio = -1f;
+
+            float snapToPos = snapAnchorPos;
+            int snapToIndex;
+            for (snapToIndex = _previousPosition; snapToIndex < last; ++snapToIndex) {
+                snapToPos = scrollPos + _positions[snapToIndex] + _heights[snapToIndex] * sizeRatio;
+                if (snapAnchorPos > snapToPos) {
+                    break;
+                }
+            }
+            if (_scrollDirection >= 0) {
+                if (snapToIndex >= last)
+                    snapToIndex = last - 1;
+                else if (snapToIndex > _previousPosition) {
+                    snapToIndex -= 1;
+                    snapToPos = scrollPos + _positions[snapToIndex] + _heights[snapToIndex] * sizeRatio;
+                }
+            }
+            else if (snapToIndex >= last)
+                snapToIndex = last - 1;
+            
+            _snapping = true;
+            _snapToIndex = snapToIndex;
+            _snapToPosition = scrollPos + (snapAnchorPos - snapToPos);
+            _snapVelocity = 0;
+            
+            return true;
+        }
+        
+        bool CalcSnapPositionHorizontal() {
+            var last = Math.Min(_previousPosition + _views.Length, _count);
+            if (last < 1) {
+                return false;
+            }
+            
+            var viewportSize = _scroll.viewport.rect.size;
+            var snapAnchorPos = viewportSize.x * SnapAnchorPosition;
+            var scrollPos = _content.anchoredPosition.x;
+            float sizeRatio = 0;
+            if (HorizontalSnap == HorizontalSnapAlignment.Middle)
+                sizeRatio = 0.5f;
+            else if (HorizontalSnap == HorizontalSnapAlignment.Right)
+                sizeRatio = 1f;
+
+            float snapToPos = snapAnchorPos;
+            int snapToIndex;
+            for (snapToIndex = _previousPosition; snapToIndex < last; ++snapToIndex) {
+                snapToPos = scrollPos + _positions[snapToIndex] + _widths[snapToIndex] * sizeRatio;
+                if (snapAnchorPos < snapToPos) {
+                    break;
+                }
+            }
+            if (_scrollDirection <= 0) {
+                if (snapToIndex >= last)
+                    snapToIndex = last - 1;
+                else if (snapToIndex > _previousPosition) {
+                    snapToIndex -= 1;
+                    snapToPos = scrollPos + _positions[snapToIndex] + _widths[snapToIndex] * sizeRatio;
+                }
+            }
+            else if (snapToIndex >= last)
+                snapToIndex = last - 1;
+            
+            _snapping = true;
+            _snapToIndex = snapToIndex;
+            _snapToPosition = scrollPos + (snapAnchorPos - snapToPos);
+            _snapVelocity = 0;
+            
+            return true;
         }
     }
 }

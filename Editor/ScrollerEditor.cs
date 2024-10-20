@@ -22,6 +22,16 @@ namespace UIS {
         SerializedProperty _prefab;
 
         /// <summary>
+        // calculate size for each item
+        /// </summary>
+        SerializedProperty _dynamicItemSize;
+
+        /// <summary>
+        /// Fixed item size
+        /// </summary>
+        SerializedProperty _fixedItemSize;
+
+        /// <summary>
         /// Top padding
         /// </summary>
         SerializedProperty _topPadding;
@@ -136,6 +146,17 @@ namespace UIS {
         /// </summary>
         SerializedProperty _parentContainer;
 
+        SerializedProperty _enableSnap;
+        SerializedProperty _horizontalSnap;
+        SerializedProperty _verticalSnap;
+        SerializedProperty _snapAnchorPosition;
+        SerializedProperty _snapElasticity;
+        SerializedProperty _snapAnchor;
+        SerializedProperty _showSnapAnchor;
+
+        static GUIContent kFixedItemHeight = new GUIContent("Fixed Item Height");
+        static GUIContent kFixedItemWidth = new GUIContent("Fixed Item Width");
+
         /// <summary>
         /// Init data
         /// </summary>
@@ -143,6 +164,8 @@ namespace UIS {
             _target = (Scroller)target;
             _object = new SerializedObject(target);
             _prefab = _object.FindProperty("Prefab");
+            _dynamicItemSize = _object.FindProperty("DynamicItemSize");
+            _fixedItemSize = _object.FindProperty("FixedItemSize");
             _topPadding = _object.FindProperty("TopPadding");
             _bottomPadding = _object.FindProperty("BottomPadding");
             _itemSpacing = _object.FindProperty("ItemSpacing");
@@ -166,6 +189,13 @@ namespace UIS {
             _pullValue = _object.FindProperty("PullValue");
             _labelOffset = _object.FindProperty("LabelOffset");
             _parentContainer = _object.FindProperty("ParentContainer");
+            _enableSnap = _object.FindProperty("EnableSnap");
+            _horizontalSnap = _object.FindProperty("HorizontalSnap");
+            _verticalSnap = _object.FindProperty("VerticalSnap");
+            _snapAnchorPosition = _object.FindProperty("SnapAnchorPosition");
+            _showSnapAnchor = _object.FindProperty("ShowSnapAnchor");
+            _snapAnchor = _object.FindProperty("SnapAnchor");
+            _snapElasticity = _object.FindProperty("SnapElasticity");
         }
 
         /// <summary>
@@ -178,6 +208,9 @@ namespace UIS {
             switch (_target.Type) {
                 case 0:
                     EditorGUILayout.PropertyField(_prefab);
+                    EditorGUILayout.PropertyField(_dynamicItemSize);
+                    if (!_dynamicItemSize.boolValue)
+                        EditorGUILayout.PropertyField(_fixedItemSize, kFixedItemHeight);
                     EditorGUILayout.PropertyField(_topPadding);
                     EditorGUILayout.PropertyField(_bottomPadding);
                     EditorGUILayout.PropertyField(_itemSpacing);
@@ -193,9 +226,13 @@ namespace UIS {
                     EditorGUILayout.PropertyField(_pullValue);
                     EditorGUILayout.PropertyField(_labelOffset);
                     EditorGUILayout.PropertyField(_parentContainer);
+                    OnSnappingPropertyGUI();
                     break;
                 case 1:
                     EditorGUILayout.PropertyField(_prefab);
+                    EditorGUILayout.PropertyField(_dynamicItemSize);
+                    if (!_dynamicItemSize.boolValue)
+                        EditorGUILayout.PropertyField(_fixedItemSize, kFixedItemWidth);
                     EditorGUILayout.PropertyField(_leftPadding);
                     EditorGUILayout.PropertyField(_rightPadding);
                     EditorGUILayout.PropertyField(_itemSpacing);
@@ -211,12 +248,43 @@ namespace UIS {
                     EditorGUILayout.PropertyField(_pullValue);
                     EditorGUILayout.PropertyField(_labelOffset);
                     EditorGUILayout.PropertyField(_parentContainer);
+                    OnSnappingPropertyGUI();
                     break;
                 default:
                     break;
             }
             if (EditorGUI.EndChangeCheck()) {
                 _object.ApplyModifiedProperties();
+            }
+        }
+
+        void OnSnappingPropertyGUI() {
+            EditorGUILayout.PropertyField(_enableSnap);
+            if (!_enableSnap.boolValue) {
+                return;
+            }
+            
+            EditorGUI.BeginChangeCheck();
+            if (_target.Type == 0) {
+                EditorGUILayout.PropertyField(_verticalSnap);
+            }
+            else {
+                EditorGUILayout.PropertyField(_horizontalSnap);
+            }
+            EditorGUILayout.PropertyField(_snapAnchorPosition);
+            if (EditorGUI.EndChangeCheck()) {
+                // need to schedule a refresh when these values are changed
+                EditorApplication.delayCall += () => {
+                    _target.RefreshSnapping();
+                };
+            }
+            EditorGUILayout.PropertyField(_snapElasticity);
+        
+            EditorGUI.BeginChangeCheck();
+            EditorGUILayout.PropertyField(_snapAnchor);
+            EditorGUILayout.PropertyField(_showSnapAnchor);
+            if (EditorGUI.EndChangeCheck()) {
+                _target.SetSnapAnchorVisible(_showSnapAnchor.boolValue);
             }
         }
     }
